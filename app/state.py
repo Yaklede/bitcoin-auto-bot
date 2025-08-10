@@ -6,6 +6,7 @@
 import json
 import redis
 import psycopg2
+import asyncio
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
