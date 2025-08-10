@@ -1,0 +1,48 @@
+# 비트코인 자동매매 봇 설정
+exchange:
+  name: upbit
+  market: KRW-BTC
+  taker_fee_bps: 25    # 0.25%
+  slippage_bps: 10     # 0.1% (보수적 가정)
+
+risk:
+  r_per_trade_bps: 50  # 0.5% = 1R
+  daily_stop_R: -2     # 일일 손실 한도
+  weekly_stop_R: -5    # 주간 손실 한도
+  max_position: 1      # 단일 포지션 유지
+
+strategy:
+  main: trend_follow
+  params:
+    ema_fast: 20
+    ema_slow: 50
+    atr_len: 14
+    init_stop_atr: 2.5
+    trail_type: chandelier
+    trail_atr_mult: 3.0
+    
+  # 시장 상태 필터
+  filters:
+    only_long_when_fast_gt_slow: true
+    min_volume_threshold: 1000000  # 최소 거래량 (KRW)
+
+# 데이터 수집 설정
+data:
+  candle_intervals: ["1m", "5m", "15m", "1h"]
+  history_days: 30
+  update_interval_seconds: 60
+
+# 모니터링 설정
+monitoring:
+  metrics_port: 8000
+  log_level: INFO
+  alert_channels:
+    - slack
+    - telegram
+
+# 백테스트 설정
+backtest:
+  start_date: "2023-01-01"
+  end_date: "2024-12-31"
+  initial_capital: 1000000  # 100만원
+  commission: 0.0025        # 0.25%
