@@ -21,6 +21,13 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
+    # 로그 관리 설정 (1주일 보관)
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+        compress: "true"
 
   postgres:
     image: postgres:16
@@ -40,6 +47,13 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    # 로그 관리 설정 (DB 로그는 더 작게)
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "2"
+        compress: "true"
 
   redis:
     image: redis:7
@@ -55,6 +69,13 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    # 로그 관리 설정
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "2"
+        compress: "true"
 
   prometheus:
     image: prom/prometheus:v2.53.0
@@ -69,9 +90,17 @@ services:
       - '--storage.tsdb.path=/prometheus'
       - '--web.console.libraries=/etc/prometheus/console_libraries'
       - '--web.console.templates=/etc/prometheus/consoles'
-      - '--storage.tsdb.retention.time=200h'
+      - '--storage.tsdb.retention.time=7d'  # 200h에서 7d로 변경 (1주일)
+      - '--storage.tsdb.retention.size=2GB'  # 최대 2GB 제한 추가
       - '--web.enable-lifecycle'
     restart: unless-stopped
+    # 로그 관리 설정 (Prometheus는 로그가 많음)
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "2"
+        compress: "true"
 
   grafana:
     image: grafana/grafana:10.4.7
@@ -82,6 +111,8 @@ services:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
       GF_USERS_ALLOW_SIGN_UP: false
+      GF_LOG_LEVEL: warn  # 로그 레벨을 warn으로 설정
+      GF_LOG_MAX_DAYS: 7  # 7일 보관
     volumes:
       - grafana_data:/var/lib/grafana
       - ./docker/grafana/dashboards:/etc/grafana/provisioning/dashboards
@@ -89,6 +120,13 @@ services:
     depends_on:
       - prometheus
     restart: unless-stopped
+    # 로그 관리 설정
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "2"
+        compress: "true"
 
 volumes:
   pgdata:

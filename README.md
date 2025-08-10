@@ -70,6 +70,19 @@ docker-compose ps
 - **Grafana**: http://localhost:3000 (admin/admin)
 - **Prometheus**: http://localhost:9090
 
+### 5. 로그 관리 설정 (EC2 배포시)
+```bash
+# 로그 관리 스크립트 실행 (EC2에서)
+sudo ./docker/setup-log-management.sh
+```
+
+**로그 관리 정책:**
+- **Docker 로그**: 최대 50MB × 3개 파일 (압축)
+- **Prometheus 데이터**: 7일 보관, 최대 2GB
+- **로그 로테이션**: 매일 실행, 7일 보관
+- **예상 디스크 사용량**: 8GB 이하 (1주일 기준)
+- **월 스토리지 비용**: 약 $0.64 (8GB × $0.08)
+
 ## 📊 API 엔드포인트
 
 ### 상태 조회

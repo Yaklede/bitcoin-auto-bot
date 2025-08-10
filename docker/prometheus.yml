@@ -1,6 +1,8 @@
 global:
-  scrape_interval: 10s
-  evaluation_interval: 10s
+  scrape_interval: 30s  # 10s에서 30s로 증가 (로그 절약)
+  evaluation_interval: 30s  # 10s에서 30s로 증가
+  external_labels:
+    monitor: 'bitcoin-bot-monitor'
 
 rule_files:
   # - "first_rules.yml"
@@ -11,9 +13,38 @@ scrape_configs:
     static_configs:
       - targets: ['bot:8000']
     metrics_path: /metrics
-    scrape_interval: 5s
-    scrape_timeout: 5s
+    scrape_interval: 15s  # 5s에서 15s로 증가 (트레이딩 봇은 자주 모니터링 필요)
+    scrape_timeout: 10s
+    # 메트릭 필터링 완화 - 중요한 메트릭만 제외
+    metric_relabel_configs:
+      # Python 내부 메트릭만 제외 (비즈니스 메트릭은 유지)
+      - source_labels: [__name__]
+        regex: 'python_gc_.*|python_info'
+        action: drop
+      # 프로세스 상세 메트릭 제외 (기본 process_ 메트릭은 유지)
+      - source_labels: [__name__]
+        regex: 'process_virtual_memory_.*|process_resident_memory_.*'
+        action: drop
 
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
+    scrape_interval: 60s  # Prometheus 자체 메트릭은 자주 수집할 필요 없음
+    # Prometheus 내부 메트릭 필터링 완화
+    metric_relabel_configs:
+      # 빌드 정보만 제외
+      - source_labels: [__name__]
+        regex: 'prometheus_build_info'
+        action: drop
+
+  # PostgreSQL 모니터링 (postgres_exporter 사용시)
+  # - job_name: 'postgres'
+  #   static_configs:
+  #     - targets: ['postgres:5432']
+  #   scrape_interval: 60s
+
+  # Redis 모니터링 (redis_exporter 사용시)
+  # - job_name: 'redis'
+  #   static_configs:
+  #     - targets: ['redis:6379']
+  #   scrape_interval: 60s
