@@ -22,7 +22,7 @@ from .risk import RiskManager
 from .broker import TradingBroker
 from .state import StateManager, SystemState
 from .api import start_api_server
-from .metrics import get_metrics, update_bot_status, update_balance, update_price, record_signal, record_trade, record_error
+from .metrics import get_metrics, update_bot_status, update_balance_metrics, update_price, record_signal, record_trade, record_error
 
 # 로깅 설정
 logging.basicConfig(
@@ -201,6 +201,16 @@ class TradingBot:
             balance = self.data_collector.get_account_balance()
             logger.info(f"현재 잔고: KRW {balance['krw']['total']:,.0f}원, BTC {balance['btc']['total']:.8f}")
             
+            # 현재가 조회를 위해 티커 정보 가져오기
+            ticker = self.data_collector.get_ticker(self.market)
+            current_price = ticker['last']
+            price_change_24h = ticker.get('percentage', 0.0)  # 24시간 변화율 (%)
+            
+            # 초기 잔고 메트릭 업데이트
+            update_balance_metrics(balance, current_price)
+            update_price(current_price, price_change_24h)
+            logger.info(f"초기 잔고 및 가격 메트릭 동기화 완료 (변동율: {price_change_24h:+.2f}%)")
+            
             # 현재 시스템 상태 확인
             current_state = self.state_manager.get_current_state()
             if current_state:
@@ -363,7 +373,7 @@ class TradingBot:
             current_price = ticker['last']
             
             # 가격 메트릭 업데이트
-            price_change_24h = ticker.get('change_rate', 0.0) * 100  # 24시간 변화율 (%)
+            price_change_24h = ticker.get('percentage', 0.0)  # 24시간 변화율 (%)
             update_price(current_price, price_change_24h)
             
             # 캔들 데이터 수집
@@ -604,6 +614,11 @@ class TradingBot:
     def _update_system_state(self, market_data: Dict[str, Any], signal: Optional[Dict[str, Any]]):
         """시스템 상태 업데이트"""
         try:
+            # 최신 잔고 정보 조회 및 메트릭 업데이트
+            balance_info = self.data_collector.get_account_balance()
+            current_price = market_data['current_price']
+            update_balance_metrics(balance_info, current_price)
+            
             # 현재 상태 정보 수집
             current_position = self.state_manager.get_current_position()
             active_orders = self.state_manager.get_active_orders()
@@ -612,6 +627,21 @@ class TradingBot:
             daily_r = self.state_manager.get_daily_r_multiple()
             weekly_r = self.state_manager.get_weekly_r_multiple()
             total_trades = self.state_manager.get_total_trades()
+            
+            # 손익 메트릭 업데이트
+            # 총 손익은 일일 + 주간 손익의 합계로 계산 (또는 별도 로직 필요시 수정)
+            total_pnl = daily_pnl + weekly_pnl  # 임시 계산, 실제로는 누적 손익 로직 필요
+            get_metrics().update_pnl(total_pnl, daily_pnl, weekly_pnl, daily_r, weekly_r)
+            
+            # 포지션 메트릭 업데이트
+            if current_position:
+                position_size = current_position.get('size', 0.0)
+                position_value = current_position.get('value', 0.0)
+                unrealized_pnl = current_position.get('unrealized_pnl', 0.0)
+                get_metrics().update_position(position_size, position_value, unrealized_pnl)
+            else:
+                # 포지션이 없는 경우 0으로 설정
+                get_metrics().update_position(0.0, 0.0, 0.0)
             
             # 시스템 상태 객체 생성
             system_state = SystemState(

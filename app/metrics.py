@@ -251,6 +251,24 @@ class TradingBotMetrics:
             logger.error(f"메트릭 초기값 설정 실패: {e}")
     
     # === 잔고 업데이트 메서드 ===
+    def update_balance_metrics(self, balance_info: Dict[str, Any], btc_price: float):
+        """거래소에서 조회한 잔고 정보로 메트릭을 한번에 업데이트"""
+        try:
+            krw_balance = balance_info.get('krw', {}).get('total', 0.0)
+            btc_balance = balance_info.get('btc', {}).get('total', 0.0)
+            
+            self.balance_krw.set(krw_balance)
+            self.balance_btc.set(btc_balance)
+            
+            # 총 자산 (KRW) = 현금 잔고 + (BTC 잔고 * 현재가)
+            total_krw = krw_balance + (btc_balance * btc_price)
+            self.total_balance_krw.set(total_krw)
+            
+            logger.debug(f"잔고 메트릭 업데이트: KRW {krw_balance:,.0f}, BTC {btc_balance:.8f}, 총 자산 {total_krw:,.0f}원")
+            
+        except Exception as e:
+            logger.error(f"잔고 메트릭 업데이트 실패: {e}")
+
     def update_balance(self, krw_balance: float, btc_balance: float, btc_price: float):
         """잔고 메트릭 업데이트"""
         try:
@@ -476,6 +494,10 @@ def initialize_metrics(registry: Optional[CollectorRegistry] = None) -> TradingB
 def record_trade(side: str, status: str, volume_btc: float, volume_krw: float):
     """거래 기록 편의 함수"""
     get_metrics().record_trade(side, status, volume_btc, volume_krw)
+
+def update_balance_metrics(balance_info: Dict[str, Any], btc_price: float):
+    """잔고 정보로 메트릭 업데이트 편의 함수"""
+    get_metrics().update_balance_metrics(balance_info, btc_price)
 
 def update_balance(krw_balance: float, btc_balance: float, btc_price: float):
     """잔고 업데이트 편의 함수"""
