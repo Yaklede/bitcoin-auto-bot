@@ -110,9 +110,9 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
-      GF_USERS_ALLOW_SIGN_UP: false
+      GF_USERS_ALLOW_SIGN_UP: "false"
       GF_LOG_LEVEL: warn  # 로그 레벨을 warn으로 설정
-      GF_LOG_MAX_DAYS: 7  # 7일 보관
+      GF_LOG_MAX_DAYS: "7"  # 7일 보관
     volumes:
       - grafana_data:/var/lib/grafana
       - ./docker/grafana/dashboards:/etc/grafana/provisioning/dashboards
