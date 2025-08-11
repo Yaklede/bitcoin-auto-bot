@@ -88,12 +88,50 @@ class Position:
             return current_price >= self.trail_price
         return False
     
-    def close_position(self, exit_price: float, timestamp: datetime) -> float:
-        """포지션 청산 및 실현손익 계산"""
+    def close_position(self, exit_price: float, timestamp: datetime, 
+                      fee_rate: float = None, slippage_bps: float = None) -> float:
+        """
+        포지션 청산 및 실현손익 계산 (수수료/슬리피지 반영)
+        
+        Args:
+            exit_price: 청산 가격
+            timestamp: 청산 시간
+            fee_rate: 수수료율 (기본값: config에서 가져옴)
+            slippage_bps: 슬리피지 (bps, 기본값: config에서 가져옴)
+            
+        Returns:
+            수수료/슬리피지 반영된 실현손익
+        """
+        from .config import config
+        
+        # 기본값 설정
+        if fee_rate is None:
+            fee_rate = config.exchange.get('taker_fee_bps', 25) / 10000.0  # bps to decimal
+        if slippage_bps is None:
+            slippage_bps = config.exchange.get('slippage_bps', 10)
+        
+        slippage_rate = slippage_bps / 10000.0  # bps to decimal
+        
+        # 슬리피지 적용된 실제 청산 가격 계산
         if self.side == PositionSide.LONG:
-            self.realized_pnl = (exit_price - self.entry_price) * self.volume
+            # 롱 포지션 청산 시 슬리피지로 인해 더 낮은 가격에 매도
+            effective_exit_price = exit_price * (1 - slippage_rate)
+            gross_pnl = (effective_exit_price - self.entry_price) * self.volume
         elif self.side == PositionSide.SHORT:
-            self.realized_pnl = (self.entry_price - exit_price) * self.volume
+            # 숏 포지션 청산 시 슬리피지로 인해 더 높은 가격에 매수
+            effective_exit_price = exit_price * (1 + slippage_rate)
+            gross_pnl = (self.entry_price - effective_exit_price) * self.volume
+        else:
+            gross_pnl = 0.0
+            effective_exit_price = exit_price
+        
+        # 수수료 계산 (진입 + 청산)
+        entry_fee = self.entry_price * self.volume * fee_rate
+        exit_fee = effective_exit_price * self.volume * fee_rate
+        total_fees = entry_fee + exit_fee
+        
+        # 수수료 차감한 실현손익
+        self.realized_pnl = gross_pnl - total_fees
         
         # 최종 R-multiple 계산
         if self.initial_risk > 0:
@@ -146,6 +184,8 @@ class PositionSizer:
             (포지션 크기, 계산 정보)
         """
         try:
+            from .config import config
+            
             # 기본 리스크 계산
             risk_per_trade = equity * (self.r_per_trade_bps / 10000.0)
             
@@ -170,14 +210,17 @@ class PositionSizer:
                 position_size = max_position_size
                 logger.warning(f"포지션 크기가 최대 한도로 제한됨: {position_size:.8f}")
             
-            # 최소 거래 단위 적용 (Upbit BTC 최소: 0.00008)
-            min_order_size = 0.00008
+            # 거래소 제약사항 적용
+            constraints = config.exchange.get('constraints', {})
+            min_order_size = constraints.get('min_order_size', 0.00008)
+            quantity_precision = constraints.get('quantity_precision', 8)
+            
             if position_size < min_order_size:
                 logger.warning(f"포지션 크기가 최소 거래 단위보다 작음: {position_size:.8f}")
                 return 0.0, {}
             
-            # 소수점 정리 (Upbit BTC는 8자리)
-            position_size = round(position_size, 8)
+            # 소수점 정리
+            position_size = round(position_size, quantity_precision)
             
             calculation_info = {
                 'equity': equity,
@@ -187,7 +230,8 @@ class PositionSizer:
                 'confidence': confidence,
                 'position_size': position_size,
                 'position_value': position_size * entry_price,
-                'risk_percentage': (adjusted_risk / equity) * 100
+                'risk_percentage': (adjusted_risk / equity) * 100,
+                'min_order_size': min_order_size
             }
             
             logger.info(f"포지션 사이징: {position_size:.8f} BTC "
@@ -214,6 +258,8 @@ class PositionSizer:
             스탑로스 가격
         """
         try:
+            from .config import config
+            
             if side == PositionSide.LONG:
                 stop_loss = entry_price - (atr * multiplier)
             elif side == PositionSide.SHORT:
@@ -221,8 +267,12 @@ class PositionSizer:
             else:
                 return entry_price
             
-            # 가격 단위 정리 (Upbit KRW는 1원 단위)
-            stop_loss = round(stop_loss)
+            # 거래소 제약사항 적용
+            constraints = config.exchange.get('constraints', {})
+            price_tick_size = constraints.get('price_tick_size', 1)
+            
+            # 가격 단위 정리
+            stop_loss = round(stop_loss / price_tick_size) * price_tick_size
             
             logger.info(f"ATR 스탑로스 계산: {stop_loss:,.0f}원 "
                        f"(ATR: {atr:,.0f}, 배수: {multiplier})")
@@ -325,18 +375,104 @@ class RiskManager:
             logger.error(f"포지션 청산 판단 실패: {e}")
             return False
     
-    def update_trailing_stop(self, position: Position, current_price: float, atr: float = None, multiplier: float = 3.0) -> Position:
-        """트레일링 스탑 업데이트"""
+    def calculate_chandelier_exit(self, position: Position, data: pd.DataFrame, 
+                                 multiplier: float = None) -> Optional[float]:
+        """
+        Chandelier Exit 트레일링 스탑 계산
+        
+        Args:
+            position: 현재 포지션
+            data: OHLCV 데이터 (지표 포함)
+            multiplier: ATR 배수 (기본값: config에서 가져옴)
+            
+        Returns:
+            트레일링 스탑 가격 (None이면 계산 불가)
+        """
+        try:
+            if not position or position.side == PositionSide.FLAT:
+                return None
+            
+            # 포지션 진입 이후 데이터만 사용
+            position_data = data[data.index >= position.timestamp].copy()
+            
+            if len(position_data) < 2:
+                return None
+            
+            # ATR 배수 설정
+            if multiplier is None:
+                multiplier = config.strategy.get('params', {}).get('trail_atr_mult', 3.0)
+            
+            # 지표 계산 확인 (ATR이 없으면 계산)
+            if 'atr' not in position_data.columns:
+                from .indicators import indicator_analyzer
+                position_data = indicator_analyzer.calculate_all_indicators(
+                    position_data, config.strategy.get('params', {})
+                )
+            
+            latest_row = position_data.iloc[-1]
+            atr_value = latest_row.get('atr', 0)
+            
+            if atr_value <= 0:
+                return None
+            
+            if position.side == PositionSide.LONG:
+                # 롱 포지션: 최고가에서 ATR * 배수만큼 아래
+                highest_high = position_data['high'].max()
+                chandelier_exit = highest_high - (multiplier * atr_value)
+                
+                # 초기 스탑로스보다 낮아지지 않도록 제한
+                if position.stop_loss:
+                    chandelier_exit = max(chandelier_exit, position.stop_loss)
+                
+                logger.debug(f"Chandelier Exit 계산: 최고가({highest_high:,.0f}) - ATR({atr_value:.0f}) * {multiplier} = {chandelier_exit:,.0f}")
+                
+                return chandelier_exit
+            else:
+                # 숏 포지션: 최저가에서 ATR * 배수만큼 위
+                lowest_low = position_data['low'].min()
+                chandelier_exit = lowest_low + (multiplier * atr_value)
+                
+                # 초기 스탑로스보다 높아지지 않도록 제한
+                if position.stop_loss:
+                    chandelier_exit = min(chandelier_exit, position.stop_loss)
+                
+                return chandelier_exit
+                
+        except Exception as e:
+            logger.error(f"Chandelier Exit 계산 실패: {e}")
+            return None
+    def update_trailing_stop(self, position: Position, data: pd.DataFrame, 
+                            current_price: float = None) -> Position:
+        """
+        트레일링 스탑 업데이트 (Chandelier Exit 사용)
+        
+        Args:
+            position: 현재 포지션
+            data: OHLCV 데이터
+            current_price: 현재 가격 (선택사항)
+            
+        Returns:
+            업데이트된 포지션
+        """
         try:
             if not position or position.side == PositionSide.FLAT:
                 return position
             
-            # ATR이 없으면 기본값 사용
-            if atr is None:
-                atr = abs(current_price - position.entry_price) * 0.02  # 2% 기본값
+            # Chandelier Exit 계산
+            new_trail_stop = self.calculate_chandelier_exit(position, data)
             
-            # 포지션의 트레일링 스탑 업데이트
-            position.update_trailing_stop(current_price, atr, multiplier)
+            if new_trail_stop is None:
+                return position
+            
+            # 트레일링 스탑 업데이트 (롱: 올라가기만, 숏: 내려가기만)
+            if position.side == PositionSide.LONG:
+                if new_trail_stop > position.trail_price:
+                    position.trail_price = new_trail_stop
+                    logger.info(f"롱 포지션 트레일링 스탑 업데이트: {position.trail_price:,.0f}원")
+            elif position.side == PositionSide.SHORT:
+                if new_trail_stop < position.trail_price:
+                    position.trail_price = new_trail_stop
+                    logger.info(f"숏 포지션 트레일링 스탑 업데이트: {position.trail_price:,.0f}원")
             
             return position
             
@@ -478,8 +614,14 @@ class RiskManager:
             logger.error(f"포지션 개설 실패: {e}")
             return False
     
-    def update_position(self, current_price: float, atr: float):
-        """포지션 업데이트 (손익, 트레일링 스탑)"""
+    def update_position(self, current_price: float, data: pd.DataFrame):
+        """
+        포지션 업데이트 (손익, 트레일링 스탑)
+        
+        Args:
+            current_price: 현재 가격
+            data: OHLCV 데이터 (지표 포함)
+        """
         if not self.current_position or self.current_position.side == PositionSide.FLAT:
             return
         
@@ -487,9 +629,8 @@ class RiskManager:
             # 미실현 손익 업데이트
             self.current_position.update_unrealized_pnl(current_price)
             
-            # 트레일링 스탑 업데이트
-            trail_multiplier = config.strategy.get('params', {}).get('trail_atr_mult', 3.0)
-            self.current_position.update_trailing_stop(current_price, atr, trail_multiplier)
+            # 트레일링 스탑 업데이트 (Chandelier Exit 사용)
+            self.current_position = self.update_trailing_stop(self.current_position, data, current_price)
             
             # 청산 조건 확인
             if self.current_position.should_close(current_price):

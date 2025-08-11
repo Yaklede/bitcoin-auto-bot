@@ -544,9 +544,144 @@ class StrategyEngine:
         
         return all_signals
     
+    def analyze_market_condition(self, data: pd.DataFrame) -> Dict[str, Any]:
+        """
+        시장 상황 분석 (ADX 기반 추세/비추세 구간 판별)
+        
+        Args:
+            data: 지표가 포함된 OHLCV 데이터
+            
+        Returns:
+            시장 상황 분석 결과
+        """
+        try:
+            if len(data) < 20:
+                return {'condition': 'unknown', 'confidence': 0.0}
+            
+            latest_row = data.iloc[-1]
+            
+            # ADX 기반 추세 강도 분석
+            adx = latest_row.get('adx', 0)
+            
+            # EMA 기반 추세 방향 분석
+            ema_fast_col = f"ema_{self.strategy_config.get('params', {}).get('ema_fast', 20)}"
+            ema_slow_col = f"ema_{self.strategy_config.get('params', {}).get('ema_slow', 50)}"
+            
+            trend_direction = 'neutral'
+            if (ema_fast_col in latest_row and ema_slow_col in latest_row and
+                not pd.isna(latest_row[ema_fast_col]) and not pd.isna(latest_row[ema_slow_col])):
+                
+                ema_ratio = latest_row[ema_fast_col] / latest_row[ema_slow_col]
+                if ema_ratio > 1.02:  # 2% 이상 차이
+                    trend_direction = 'uptrend'
+                elif ema_ratio < 0.98:  # 2% 이상 차이
+                    trend_direction = 'downtrend'
+            
+            # RSI 기반 과매수/과매도 분석
+            rsi = latest_row.get('rsi', 50)
+            rsi_condition = 'neutral'
+            if rsi > 70:
+                rsi_condition = 'overbought'
+            elif rsi < 30:
+                rsi_condition = 'oversold'
+            
+            # 시장 상황 종합 판단
+            if adx > 25:  # 강한 추세
+                if trend_direction == 'uptrend':
+                    condition = 'strong_uptrend'
+                elif trend_direction == 'downtrend':
+                    condition = 'strong_downtrend'
+                else:
+                    condition = 'trending'
+            elif adx > 15:  # 약한 추세
+                condition = 'weak_trend'
+            else:  # 횡보
+                condition = 'sideways'
+            
+            # 신뢰도 계산 (ADX 값에 기반)
+            confidence = min(adx / 30.0, 1.0)  # ADX 30 이상이면 신뢰도 1.0
+            
+            return {
+                'condition': condition,
+                'trend_direction': trend_direction,
+                'trend_strength': adx,
+                'rsi_condition': rsi_condition,
+                'confidence': confidence,
+                'adx': adx,
+                'rsi': rsi
+            }
+            
+        except Exception as e:
+            logger.error(f"시장 상황 분석 실패: {e}")
+            return {'condition': 'unknown', 'confidence': 0.0}
+    
+    def get_dynamic_strategy_weights(self, market_condition: Dict[str, Any]) -> Dict[str, float]:
+        """
+        시장 상황에 따른 동적 전략 가중치 계산
+        
+        Args:
+            market_condition: 시장 상황 분석 결과
+            
+        Returns:
+            전략별 가중치 (0.0 ~ 1.0)
+        """
+        try:
+            condition = market_condition.get('condition', 'unknown')
+            trend_strength = market_condition.get('trend_strength', 0)
+            rsi_condition = market_condition.get('rsi_condition', 'neutral')
+            
+            # 기본 가중치
+            weights = {
+                'trend_following': 0.6,      # 기본 메인 전략
+                'volatility_breakout': 0.3,  # 보조 전략
+                'rsi_mean_reversion': 0.1    # 보조 전략
+            }
+            
+            # 시장 상황별 가중치 조정
+            if condition in ['strong_uptrend', 'strong_downtrend']:
+                # 강한 추세: 추세추종 전략 강화
+                weights['trend_following'] = 0.8
+                weights['volatility_breakout'] = 0.2
+                weights['rsi_mean_reversion'] = 0.0
+                
+            elif condition == 'weak_trend':
+                # 약한 추세: 변동성 돌파 전략 강화
+                weights['trend_following'] = 0.5
+                weights['volatility_breakout'] = 0.4
+                weights['rsi_mean_reversion'] = 0.1
+                
+            elif condition == 'sideways':
+                # 횡보: RSI 역추세 전략 강화
+                weights['trend_following'] = 0.2
+                weights['volatility_breakout'] = 0.3
+                weights['rsi_mean_reversion'] = 0.5
+            
+            # RSI 과매수/과매도 상황 고려
+            if rsi_condition == 'overbought':
+                # 과매수: 매수 전략 약화, 역추세 강화
+                weights['trend_following'] *= 0.7
+                weights['volatility_breakout'] *= 0.5
+                weights['rsi_mean_reversion'] *= 1.5
+                
+            elif rsi_condition == 'oversold':
+                # 과매도: 역추세 전략 강화
+                weights['rsi_mean_reversion'] *= 1.3
+            
+            # 가중치 정규화
+            total_weight = sum(weights.values())
+            if total_weight > 0:
+                weights = {k: v / total_weight for k, v in weights.items()}
+            
+            logger.info(f"동적 전략 가중치: {weights} (시장상황: {condition})")
+            
+            return weights
+            
+        except Exception as e:
+            logger.error(f"동적 전략 가중치 계산 실패: {e}")
+            return {'trend_following': 0.6, 'volatility_breakout': 0.3, 'rsi_mean_reversion': 0.1}
     def get_combined_signal(self, data: pd.DataFrame) -> Optional[Signal]:
         """
-        통합 시그널 생성 (우선순위 기반)
+        통합 시그널 생성 (시장 상황 기반 동적 가중치 적용)
         
         Args:
             data: OHLCV 데이터
@@ -555,23 +690,55 @@ class StrategyEngine:
             최종 통합 시그널
         """
         try:
+            # 시장 상황 분석
+            market_condition = self.analyze_market_condition(data)
+            
+            # 동적 전략 가중치 계산
+            strategy_weights = self.get_dynamic_strategy_weights(market_condition)
+            
+            # 모든 전략에서 시그널 생성
             all_signals = self.generate_all_signals(data)
             
-            # 우선순위: 추세추종 > 변동성 돌파 > RSI 역추세
-            priority_order = ['trend_following', 'volatility_breakout', 'rsi_mean_reversion']
+            # 가중치 기반 시그널 선택
+            best_signal = None
+            best_score = 0.0
             
-            for strategy_name in priority_order:
-                if strategy_name in all_signals and all_signals[strategy_name]:
-                    # 가장 최근 시그널 선택
-                    latest_signal = max(all_signals[strategy_name], 
-                                      key=lambda s: s.timestamp)
+            for strategy_name, signals in all_signals.items():
+                if not signals:
+                    continue
+                
+                # 가장 최근 시그널 선택
+                latest_signal = max(signals, key=lambda s: s.timestamp)
+                
+                # 시그널 점수 계산 (신뢰도 × 전략 가중치)
+                strategy_weight = strategy_weights.get(strategy_name, 0.0)
+                signal_score = latest_signal.confidence * strategy_weight
+                
+                # 시장 상황과 시그널 방향 일치성 보너스
+                if market_condition.get('condition') in ['strong_uptrend', 'weak_trend']:
+                    if latest_signal.signal_type == SignalType.BUY:
+                        signal_score *= 1.2  # 상승 추세에서 매수 시그널 보너스
+                elif market_condition.get('condition') == 'strong_downtrend':
+                    if latest_signal.signal_type == SignalType.SELL:
+                        signal_score *= 1.2  # 하락 추세에서 매도 시그널 보너스
+                
+                # 최고 점수 시그널 선택
+                if signal_score > best_score and signal_score >= 0.3:  # 최소 임계값
+                    best_score = signal_score
+                    best_signal = latest_signal
                     
-                    # 신뢰도가 충분한 경우만 반환
-                    if latest_signal.confidence >= 0.5:
-                        logger.info(f"통합 시그널 선택: {strategy_name} - {latest_signal.signal_type.value}")
-                        return latest_signal
+                    # 메타데이터에 시장 분석 정보 추가
+                    best_signal.metadata.update({
+                        'market_condition': market_condition,
+                        'strategy_weights': strategy_weights,
+                        'final_score': signal_score
+                    })
             
-            return None
+            if best_signal:
+                logger.info(f"통합 시그널 선택: {best_signal.metadata.get('strategy', 'unknown')} - "
+                           f"{best_signal.signal_type.value} (점수: {best_score:.3f})")
+            
+            return best_signal
             
         except Exception as e:
             logger.error(f"통합 시그널 생성 실패: {e}")

@@ -3,7 +3,14 @@ exchange:
   name: upbit
   market: KRW-BTC
   taker_fee_bps: 25    # 0.25%
+  maker_fee_bps: 5     # 0.05%
   slippage_bps: 10     # 0.1% (보수적 가정)
+  
+  # 거래소 제약사항
+  constraints:
+    min_order_size: 0.00008    # BTC 최소 주문 수량
+    price_tick_size: 1         # KRW 가격 틱 사이즈
+    quantity_precision: 8      # BTC 수량 소수점 자릿수
 
 risk:
   r_per_trade_bps: 50  # 0.5% = 1R
@@ -17,6 +24,7 @@ strategy:
     ema_fast: 20
     ema_slow: 50
     atr_len: 14
+    adx_period: 14        # ADX 기간 추가
     init_stop_atr: 2.5
     trail_type: chandelier
     trail_atr_mult: 3.0
@@ -25,6 +33,13 @@ strategy:
   filters:
     only_long_when_fast_gt_slow: true
     min_volume_threshold: 1000000  # 최소 거래량 (KRW)
+    
+  # 동적 전략 가중치 설정
+  dynamic_weights:
+    enable: true
+    adx_trend_threshold: 25      # 강한 추세 임계값
+    adx_weak_threshold: 15       # 약한 추세 임계값
+    min_signal_score: 0.3        # 최소 시그널 점수
 
 # 데이터 수집 설정
 data:

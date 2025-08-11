@@ -247,6 +247,40 @@ class TechnicalIndicators:
             return pd.Series(dtype=float)
     
     @staticmethod
+    def adx(data: pd.DataFrame, period: int = 14) -> pd.Series:
+        """
+        평균방향지수(ADX) 계산 - 추세 강도 측정
+        
+        Args:
+            data: OHLC 데이터
+            period: 기간 (기본값: 14)
+            
+        Returns:
+            ADX 값들의 Series
+        """
+        try:
+            if not all(col in data.columns for col in ['high', 'low', 'close']):
+                logger.error("ADX 계산을 위한 필수 컬럼(high, low, close)이 없습니다")
+                return pd.Series(dtype=float)
+            
+            adx_values = ta.adx(data['high'], data['low'], data['close'], length=period)
+            
+            # pandas_ta는 ADX_14 형태로 반환하므로 ADX 컬럼만 추출
+            if isinstance(adx_values, pd.DataFrame):
+                adx_col = f'ADX_{period}'
+                if adx_col in adx_values.columns:
+                    return adx_values[adx_col]
+                else:
+                    # 첫 번째 컬럼을 ADX로 가정
+                    return adx_values.iloc[:, 0]
+            else:
+                return adx_values
+            
+        except Exception as e:
+            logger.error(f"ADX 계산 실패: {e}")
+            return pd.Series(dtype=float)
+    
+    @staticmethod
     def bollinger_bands(data: Union[pd.Series, pd.DataFrame], period: int = 20, 
                        std_dev: float = 2.0, column: str = 'close') -> pd.DataFrame:
         """
@@ -437,6 +471,10 @@ class IndicatorAnalyzer:
             
             # RSI 계산
             result['rsi'] = self.indicators.rsi(data, 14)
+            
+            # ADX 계산 (추세 강도 측정)
+            adx_period = config.get('adx_period', 14)
+            result['adx'] = self.indicators.adx(data, adx_period)
             
             # 볼린저 밴드
             bb = self.indicators.bollinger_bands(data, 20, 2.0)
